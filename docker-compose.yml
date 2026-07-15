@@ -1,0 +1,118 @@
+# ==========================================================================
+# Hotel Booking System - docker-compose
+# Day 4 scope: + booking-service (+ MongoDB riêng) + api-gateway
+# Day 5 sẽ bổ sung: payment-service, notification-service, rabbitmq.
+# Đã bỏ dòng `version:` (cú pháp cũ, Docker Compose hiện tại không cần nữa).
+# ==========================================================================
+
+services:
+  mongo-auth:
+    image: mongo:7
+    container_name: mongo-auth
+    restart: unless-stopped
+    ports:
+      - "27018:27017"
+    volumes:
+      - mongo_auth_data:/data/db
+    networks:
+      - hotel-net
+
+  mongo-room:
+    image: mongo:7
+    container_name: mongo-room
+    restart: unless-stopped
+    ports:
+      - "27019:27017"
+    volumes:
+      - mongo_room_data:/data/db
+    networks:
+      - hotel-net
+
+  mongo-booking:
+    image: mongo:7
+    container_name: mongo-booking
+    restart: unless-stopped
+    ports:
+      - "27020:27017"
+    volumes:
+      - mongo_booking_data:/data/db
+    networks:
+      - hotel-net
+
+  auth-service:
+    build: ./auth-service
+    container_name: auth-service
+    restart: unless-stopped
+    ports:
+      - "4001:4001"
+    environment:
+      - PORT=4001
+      - MONGO_URI=mongodb://mongo-auth:27017/auth_db
+      - JWT_SECRET=${JWT_SECRET:-dev_secret_change_me}
+      - JWT_EXPIRES_IN=2h
+    depends_on:
+      - mongo-auth
+    networks:
+      - hotel-net
+
+  room-service:
+    build: ./room-service
+    container_name: room-service
+    restart: unless-stopped
+    ports:
+      - "4002:4002"
+    environment:
+      - PORT=4002
+      - MONGO_URI=mongodb://mongo-room:27017/room_db
+      - JWT_SECRET=${JWT_SECRET:-dev_secret_change_me}
+    depends_on:
+      - mongo-room
+    networks:
+      - hotel-net
+
+  booking-service:
+    build: ./booking-service
+    container_name: booking-service
+    restart: unless-stopped
+    ports:
+      - "4003:4003"
+    environment:
+      - PORT=4003
+      - MONGO_URI=mongodb://mongo-booking:27017/booking_db
+      - JWT_SECRET=${JWT_SECRET:-dev_secret_change_me}
+      - ROOM_SERVICE_URL=http://room-service:4002
+      # PAYMENT_SERVICE_URL sẽ dùng ở Ngày 5 khi payment-service được thêm vào
+      - PAYMENT_SERVICE_URL=http://payment-service:4004
+    depends_on:
+      - mongo-booking
+      - room-service
+    networks:
+      - hotel-net
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: api-gateway
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    environment:
+      - PORT=4000
+      - JWT_SECRET=${JWT_SECRET:-dev_secret_change_me}
+      - AUTH_SERVICE_URL=http://auth-service:4001
+      - ROOM_SERVICE_URL=http://room-service:4002
+      - BOOKING_SERVICE_URL=http://booking-service:4003
+    depends_on:
+      - auth-service
+      - room-service
+      - booking-service
+    networks:
+      - hotel-net
+
+networks:
+  hotel-net:
+    driver: bridge
+
+volumes:
+  mongo_auth_data:
+  mongo_room_data:
+  mongo_booking_data:
