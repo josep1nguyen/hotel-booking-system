@@ -12,6 +12,7 @@ app.use(cors());
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || "http://localhost:4001";
 const ROOM_SERVICE_URL = process.env.ROOM_SERVICE_URL || "http://localhost:4002";
 const BOOKING_SERVICE_URL = process.env.BOOKING_SERVICE_URL || "http://localhost:4003";
+const NOTIFICATION_SERVICE_URL = process.env.NOTIFICATION_SERVICE_URL || "http://localhost:4005";
 
 app.get("/health", (req, res) => res.status(200).json({ status: "ok", service: "api-gateway" }));
 
@@ -47,6 +48,14 @@ app.use(
   })
 );
 
+app.use(
+  createProxyMiddleware({
+    pathFilter: "/api/notifications",
+    target: NOTIFICATION_SERVICE_URL,
+    changeOrigin: true,
+  })
+);
+
 app.use((req, res) => res.status(404).json({ message: "Route không tồn tại trên API Gateway" }));
 
 const PORT = process.env.PORT || 4000;
@@ -55,4 +64,5 @@ app.listen(PORT, () => {
   console.log(`[api-gateway] -> auth: ${AUTH_SERVICE_URL}`);
   console.log(`[api-gateway] -> room: ${ROOM_SERVICE_URL}`);
   console.log(`[api-gateway] -> booking: ${BOOKING_SERVICE_URL}`);
+  console.log(`[api-gateway] -> notification: ${NOTIFICATION_SERVICE_URL}`);
 });

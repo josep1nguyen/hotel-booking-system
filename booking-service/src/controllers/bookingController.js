@@ -1,5 +1,7 @@
 const Booking = require("../models/Booking");
 const { getRoomById } = require("../services/roomServiceClient");
+const { chargePayment } = require("../services/paymentServiceClient");
+const { publishEvent } = require("../config/rabbitmq");
 
 const CANCEL_POLICY_HOURS = 24;
 const PENDING_PAYMENT_TIMEOUT_MINUTES = 15;
@@ -73,14 +75,57 @@ async function createBooking(req, res) {
       status: "PENDING_PAYMENT",
     });
 
-    // TODO (Ngày 5): sau khi tạo booking PENDING_PAYMENT, gọi sang Payment Service (REST)
-    // để xử lý thanh toán; Payment Service xử lý xong sẽ publish BookingConfirmed/PaymentFailed
-    // lên RabbitMQ, hoặc gọi lại endpoint nội bộ PATCH /internal/bookings/:id/confirm|fail
-    // (đã scaffold sẵn bên dưới) để cập nhật trạng thái booking tương ứng.
+    // Gọi Payment Service ĐỒNG BỘ (REST) - đúng luồng Sequence Diagram FR-04.
+    let paymentResult;
+    try {
+      paymentResult = await chargePayment({ bookingId: booking._id.toString(), guestId, amount: totalPrice });
+    } catch (paymentErr) {
+      // Payment Service không phản hồi sau khi retry -> giữ booking ở PENDING_PAYMENT,
+      // để autoCancelJob tự dọn dẹp sau 15 phút nếu vẫn không xử lý được (ràng buộc Phần 1.3).
+      console.error(`[booking-service] ${paymentErr.message}`);
+      return res.status(202).json({
+        message:
+          "Đã tạo booking, nhưng hệ thống thanh toán tạm thời không phản hồi. Booking đang ở trạng thái chờ và sẽ tự động hủy nếu không thanh toán được trong 15 phút.",
+        booking,
+      });
+    }
 
-    return res.status(201).json({
-      message: "Tạo booking thành công, đang chờ thanh toán",
+    if (paymentResult.status === "SUCCESS") {
+      booking.status = "CONFIRMED";
+      await booking.save();
+
+      publishEvent("booking.confirmed", {
+        bookingId: booking._id.toString(),
+        guestId,
+        roomNumber: booking.roomNumber,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        totalPrice: booking.totalPrice,
+      });
+
+      return res.status(201).json({
+        message: "Đặt phòng thành công",
+        booking,
+        payment: paymentResult,
+      });
+    }
+
+    // E2 (FR-04): Thanh toán thất bại -> booking chuyển CANCELLED
+    booking.status = "CANCELLED";
+    booking.cancelReason = `Thanh toán thất bại: ${paymentResult.reason || "không rõ lý do"}`;
+    await booking.save();
+
+    publishEvent("payment.failed", {
+      bookingId: booking._id.toString(),
+      guestId,
+      roomNumber: booking.roomNumber,
+      reason: paymentResult.reason,
+    });
+
+    return res.status(402).json({
+      message: "Thanh toán thất bại, booking đã bị hủy. Vui lòng thử đặt lại.",
       booking,
+      payment: paymentResult,
     });
   } catch (err) {
     console.error(err);
@@ -122,8 +167,14 @@ async function cancelBooking(req, res) {
     booking.cancelReason = isAdmin ? "Hủy bởi Admin" : "Hủy bởi Guest";
     await booking.save();
 
-    // TODO (Ngày 5): publish BookingCancelled lên RabbitMQ để Payment Service xử lý hoàn tiền
-    // (nếu đủ điều kiện) và Notification Service gửi thông báo cho Guest.
+    // Publish bất đồng bộ - Guest không cần chờ Payment Service xử lý hoàn tiền xong mới
+    // nhận response (đúng luồng trong Sequence Diagram FR-06).
+    publishEvent("booking.cancelled", {
+      bookingId: booking._id.toString(),
+      guestId: booking.guestId,
+      roomNumber: booking.roomNumber,
+      totalPrice: booking.totalPrice,
+    });
 
     return res.status(200).json({ message: "Hủy đặt phòng thành công", booking });
   } catch (err) {
