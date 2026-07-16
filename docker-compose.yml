@@ -1,11 +1,20 @@
 # ==========================================================================
 # Hotel Booking System - docker-compose
-# Day 4 scope: + booking-service (+ MongoDB riêng) + api-gateway
-# Day 5 sẽ bổ sung: payment-service, notification-service, rabbitmq.
-# Đã bỏ dòng `version:` (cú pháp cũ, Docker Compose hiện tại không cần nữa).
+# Day 5 scope: + payment-service + notification-service + rabbitmq (+ MongoDB riêng
+# cho payment/notification). Đã bỏ dòng `version:` (cú pháp cũ, không cần nữa).
 # ==========================================================================
 
 services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # AMQP protocol port (dùng cho các service kết nối)
+      - "15672:15672" # Management UI: http://localhost:15672 (user/pass mặc định: guest/guest)
+    networks:
+      - hotel-net
+
   mongo-auth:
     image: mongo:7
     container_name: mongo-auth
@@ -36,6 +45,28 @@ services:
       - "27020:27017"
     volumes:
       - mongo_booking_data:/data/db
+    networks:
+      - hotel-net
+
+  mongo-payment:
+    image: mongo:7
+    container_name: mongo-payment
+    restart: unless-stopped
+    ports:
+      - "27021:27017"
+    volumes:
+      - mongo_payment_data:/data/db
+    networks:
+      - hotel-net
+
+  mongo-notification:
+    image: mongo:7
+    container_name: mongo-notification
+    restart: unless-stopped
+    ports:
+      - "27022:27017"
+    volumes:
+      - mongo_notification_data:/data/db
     networks:
       - hotel-net
 
@@ -81,11 +112,50 @@ services:
       - MONGO_URI=mongodb://mongo-booking:27017/booking_db
       - JWT_SECRET=${JWT_SECRET:-dev_secret_change_me}
       - ROOM_SERVICE_URL=http://room-service:4002
-      # PAYMENT_SERVICE_URL sẽ dùng ở Ngày 5 khi payment-service được thêm vào
       - PAYMENT_SERVICE_URL=http://payment-service:4004
+      - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
       - mongo-booking
       - room-service
+      - rabbitmq
+    networks:
+      - hotel-net
+
+  payment-service:
+    build: ./payment-service
+    container_name: payment-service
+    restart: unless-stopped
+    ports:
+      - "4004:4004"
+    environment:
+      - PORT=4004
+      - MONGO_URI=mongodb://mongo-payment:27017/payment_db
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      # Tỷ lệ thanh toán thành công giả lập (0-1). Có thể chỉnh để demo luồng thất bại dễ hơn.
+      - PAYMENT_SUCCESS_RATE=0.85
+      # Bỏ trống = tắt rule fail theo ngưỡng tiền. Đặt số (VD: 5000000) để demo luồng
+      # "thanh toán thất bại" một cách chắc chắn thay vì chờ trúng ngẫu nhiên.
+      - PAYMENT_FORCE_FAIL_THRESHOLD=
+    depends_on:
+      - mongo-payment
+      - rabbitmq
+    networks:
+      - hotel-net
+
+  notification-service:
+    build: ./notification-service
+    container_name: notification-service
+    restart: unless-stopped
+    ports:
+      - "4005:4005"
+    environment:
+      - PORT=4005
+      - MONGO_URI=mongodb://mongo-notification:27017/notification_db
+      - JWT_SECRET=${JWT_SECRET:-dev_secret_change_me}
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      - mongo-notification
+      - rabbitmq
     networks:
       - hotel-net
 
@@ -101,10 +171,12 @@ services:
       - AUTH_SERVICE_URL=http://auth-service:4001
       - ROOM_SERVICE_URL=http://room-service:4002
       - BOOKING_SERVICE_URL=http://booking-service:4003
+      - NOTIFICATION_SERVICE_URL=http://notification-service:4005
     depends_on:
       - auth-service
       - room-service
       - booking-service
+      - notification-service
     networks:
       - hotel-net
 
@@ -116,3 +188,5 @@ volumes:
   mongo_auth_data:
   mongo_room_data:
   mongo_booking_data:
+  mongo_payment_data:
+  mongo_notification_data:
